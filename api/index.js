@@ -5,23 +5,62 @@ const { Solar, Lunar } = require('lunar-javascript');
 const app = express();
 app.use(express.json());
 
-// --- 辅助工具：日期清洗 ---
-function cleanDateStr(dateInput) {
+// --- 辅助工具：获取当前日期的字符串 (YYYY-MM-DD) ---
+// 修复 .split 报错的关键
+function getTodayStr() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// --- 辅助工具：日期与时间清洗 ---
+function parseInput(dateStr, hourInput, timeIndexInput) {
+  let cleanDate = "2000-01-01";
+  let finalHour = 12; // 默认午时
+  
   try {
-    if (!dateInput) {
-      const now = new Date();
-      return `${now.getFullYear()}-${now.getMonth()+1}-${now.getDate()}`;
+    // 1. 处理日期字符串
+    if (dateStr) {
+      // 移除 "T" 方便处理
+      let s = String(dateStr).trim().replace('T', ' ');
+      
+      // 如果包含时间 (例如 "2024-02-10 14:30")，尝试提取小时
+      if (s.includes(':')) {
+        const parts = s.split(' '); // ["2024-02-10", "14:30"]
+        cleanDate = parts[0];
+        // 提取小时
+        if (parts.length > 1) {
+          const timePart = parts[1];
+          finalHour = parseInt(timePart.split(':')[0], 10);
+        }
+      } else {
+        cleanDate = s.split(' ')[0];
+      }
     }
-    let s = String(dateInput).trim();
-    if (s.includes('T')) s = s.split('T')[0];
-    if (s.includes(' ')) s = s.split(' ')[0];
-    const parts = s.split('-');
-    if (parts.length === 3) {
-      return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+
+    // 2. 处理时辰 (优先级：timeIndex > hourInput > 从dateStr提取的hour)
+    let finalTimeIndex = 0;
+    
+    if (timeIndexInput !== undefined && timeIndexInput !== null) {
+      finalTimeIndex = Number(timeIndexInput);
+    } else {
+      // 如果外部显式传了 hour，覆盖自动提取的 hour
+      if (hourInput !== undefined && hourInput !== null) {
+        finalHour = Number(hourInput);
+      }
+      // 转换小时 -> 时辰索引
+      if (finalHour >= 23) finalTimeIndex = 12;
+      else if (finalHour < 1) finalTimeIndex = 0;
+      else finalTimeIndex = Math.floor((finalHour + 1) / 2);
     }
-    return s;
+
+    return { cleanDate, finalTimeIndex, debugHour: finalHour };
+
   } catch (e) {
-    return "2000-01-01";
+    console.error("Parse Error:", e);
+    return { cleanDate: "2000-01-01", finalTimeIndex: 6, debugHour: 12 };
   }
 }
 
@@ -41,49 +80,40 @@ function getPalaceData(astrolabe, palaceName) {
 }
 
 app.get('/', (req, res) => {
-  res.send('🔮 Oracle API is Running (V5.0 Fixed Horoscope)');
+  res.send('🔮 Oracle API is Running (V5.0 Auto-Time)');
 });
 
 // --- API 1: 紫微斗数 (Ziwei) ---
 app.post('/api/ziwei', (req, res) => {
   try {
-    let { dateStr, gender, hour, timeIndex } = req.body;
+    const { dateStr, gender, hour, timeIndex } = req.body;
     
-    // 1. 准备参数
-    const cleanDate = cleanDateStr(dateStr);
-    let finalTimeIndex = 0;
-    if (timeIndex !== undefined && timeIndex !== null) {
-      finalTimeIndex = Number(timeIndex);
-    } else if (hour !== undefined) {
-      const h = Number(hour);
-      if (h >= 23) finalTimeIndex = 12;
-      else if (h < 1) finalTimeIndex = 0;
-      else finalTimeIndex = Math.floor((h + 1) / 2);
-    }
+    // 1. 智能解析参数
+    const { cleanDate, finalTimeIndex, debugHour } = parseInput(dateStr, hour, timeIndex);
     const genderStr = gender === '女' ? '女' : '男';
+
+    console.log(`Ziwei Request: Date=${cleanDate}, Hour=${debugHour}, Idx=${finalTimeIndex}, Gender=${genderStr}`);
 
     // 2. 核心排盘
     const astrolabe = astro.bySolar(cleanDate, finalTimeIndex, genderStr, true, 'zh-CN');
 
-    // 3. 计算流年 (关键修复点！)
+    // 3. 计算流年 (已修复)
     let liunianStars = [];
     try {
-      // 修复：必须传日期字符串，不能传年份数字！
-      // 获取当前日期的字符串格式 "YYYY-MM-DD"
-      const today = new Date();
-      const todayStr = `${today.getFullYear()}-${(today.getMonth()+1).toString().padStart(2,'0')}-${today.getDate().toString().padStart(2,'0')}`;
-      
+      // 关键修复：传入 "YYYY-MM-DD" 字符串，而不是数字
+      const todayStr = getTodayStr();
       const horoscopeObj = astrolabe.horoscope(todayStr); 
       liunianStars = getPalaceData(horoscopeObj, '命宫').主星;
     } catch (err) {
-      console.error("流年计算失败，忽略:", err.message);
-      liunianStars = ["(流年计算异常)"]; // 兜底，不让接口挂掉
+      console.error("流年计算失败:", err.message);
+      liunianStars = ["(运势计算中)"]; 
     }
 
     // 4. 返回结果
     res.json({
       meta: {
         日期: cleanDate,
+        判定小时: debugHour,
         时辰索引: finalTimeIndex,
         性别: genderStr,
         局数: astrolabe.fiveElementsClass,
@@ -100,12 +130,8 @@ app.post('/api/ziwei', (req, res) => {
     });
 
   } catch (error) {
-    console.error("Critical Error:", error);
-    res.status(500).json({ 
-      error: "排盘失败", 
-      details: error.message,
-      stack: error.stack 
-    });
+    console.error("API Error:", error);
+    res.status(500).json({ error: "API Error", details: error.message, stack: error.stack });
   }
 });
 
@@ -113,15 +139,16 @@ app.post('/api/ziwei', (req, res) => {
 app.post('/api/bazi', (req, res) => {
   try {
     const { dateStr, hour } = req.body;
-    const cleanDate = cleanDateStr(dateStr);
+    // 复用智能解析
+    const { cleanDate, debugHour } = parseInput(dateStr, hour);
+    
     const dateObj = new Date(cleanDate);
-    const h = Number(hour) || 12;
-
+    
     const solar = Solar.fromYmdHms(
       dateObj.getFullYear(),
       dateObj.getMonth() + 1,
       dateObj.getDate(),
-      h, 0, 0
+      debugHour, 0, 0
     );
     
     const lunar = solar.getLunar();
