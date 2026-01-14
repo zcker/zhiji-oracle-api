@@ -5,25 +5,23 @@ const { Solar, Lunar } = require('lunar-javascript');
 const app = express();
 app.use(express.json());
 
-// --- 辅助工具：日期清洗 (暴力修正版) ---
+// --- 辅助工具：日期清洗 ---
 function cleanDateStr(dateInput) {
   try {
     if (!dateInput) {
       const now = new Date();
       return `${now.getFullYear()}-${now.getMonth()+1}-${now.getDate()}`;
     }
-    // 强制转字符串，移除时间部分，移除空格
     let s = String(dateInput).trim();
     if (s.includes('T')) s = s.split('T')[0];
     if (s.includes(' ')) s = s.split(' ')[0];
-    // 确保格式为 YYYY-MM-DD (例如 2024-2-1 -> 2024-02-01)
     const parts = s.split('-');
     if (parts.length === 3) {
       return `${parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
     }
     return s;
   } catch (e) {
-    return "2000-01-01"; // 兜底日期
+    return "2000-01-01";
   }
 }
 
@@ -42,32 +40,17 @@ function getPalaceData(astrolabe, palaceName) {
   }
 }
 
-// --- 根路径 ---
 app.get('/', (req, res) => {
-  res.send('🔮 Oracle API is Running (V4.0 Debug Mode)');
-});
-
-// --- 调试接口 (新) ---
-// 访问 /api/debug 看看 iztro 到底能不能工作
-app.get('/api/debug', (req, res) => {
-  try {
-    const astrolabe = astro.bySolar("2024-01-01", 0, "男", true, "zh-CN");
-    res.json({ status: "ok", demo: astrolabe.palace('命宫').majorStars[0].name });
-  } catch (e) {
-    res.json({ status: "error", msg: e.message });
-  }
+  res.send('🔮 Oracle API is Running (V5.0 Fixed Horoscope)');
 });
 
 // --- API 1: 紫微斗数 (Ziwei) ---
 app.post('/api/ziwei', (req, res) => {
   try {
-    // 兼容 hour (Dify习惯) 和 timeIndex (测试脚本习惯)
     let { dateStr, gender, hour, timeIndex } = req.body;
     
-    // 1. 强力清洗日期
+    // 1. 准备参数
     const cleanDate = cleanDateStr(dateStr);
-    
-    // 2. 计算时辰索引 (0-12)
     let finalTimeIndex = 0;
     if (timeIndex !== undefined && timeIndex !== null) {
       finalTimeIndex = Number(timeIndex);
@@ -77,15 +60,27 @@ app.post('/api/ziwei', (req, res) => {
       else if (h < 1) finalTimeIndex = 0;
       else finalTimeIndex = Math.floor((h + 1) / 2);
     }
-
     const genderStr = gender === '女' ? '女' : '男';
 
-    console.log(`Debug Input: Date=${cleanDate}, TimeIdx=${finalTimeIndex}, Gender=${genderStr}`);
-
-    // 3. 排盘
+    // 2. 核心排盘
     const astrolabe = astro.bySolar(cleanDate, finalTimeIndex, genderStr, true, 'zh-CN');
 
-    // 4. 构建返回
+    // 3. 计算流年 (关键修复点！)
+    let liunianStars = [];
+    try {
+      // 修复：必须传日期字符串，不能传年份数字！
+      // 获取当前日期的字符串格式 "YYYY-MM-DD"
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${(today.getMonth()+1).toString().padStart(2,'0')}-${today.getDate().toString().padStart(2,'0')}`;
+      
+      const horoscopeObj = astrolabe.horoscope(todayStr); 
+      liunianStars = getPalaceData(horoscopeObj, '命宫').主星;
+    } catch (err) {
+      console.error("流年计算失败，忽略:", err.message);
+      liunianStars = ["(流年计算异常)"]; // 兜底，不让接口挂掉
+    }
+
+    // 4. 返回结果
     res.json({
       meta: {
         日期: cleanDate,
@@ -100,10 +95,7 @@ app.post('/api/ziwei', (req, res) => {
         夫妻宫: getPalaceData(astrolabe, '夫妻宫'),
         事业宫: getPalaceData(astrolabe, '官禄宫'),
         财帛宫: getPalaceData(astrolabe, '财帛宫'),
-        流年: getPalaceData(
-          astrolabe.horoscope(new Date().getFullYear()), 
-          '命宫'
-        ).主星
+        流年: liunianStars
       }
     });
 
@@ -112,7 +104,7 @@ app.post('/api/ziwei', (req, res) => {
     res.status(500).json({ 
       error: "排盘失败", 
       details: error.message,
-      stack: error.stack // 打印堆栈以便调试
+      stack: error.stack 
     });
   }
 });
