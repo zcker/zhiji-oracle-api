@@ -15,8 +15,14 @@ function getZiweiTimeIndex(hour) {
 
 // --- 辅助工具 2：日期清洗 ---
 function cleanDateStr(dateInput) {
-  if (!dateInput) return new Date().toISOString().split('T')[0];
-  return String(dateInput).trim().split(' ')[0].split('T')[0];
+  // Return a normalized date/time string (keep time when provided).
+  if (!dateInput) return new Date().toISOString().replace('T', ' ').split('.')[0];
+  if (dateInput instanceof Date) return dateInput.toISOString().replace('T', ' ').split('.')[0];
+
+  const s = String(dateInput).trim();
+  // If ISO-like 'YYYY-MM-DDTHH:mm:ss' or 'YYYY-MM-DD HH:mm', normalize to 'YYYY-MM-DD HH:mm:ss'
+  const withoutMs = s.split('.')[0];
+  return withoutMs.replace('T', ' ');
 }
 
 // --- 辅助工具 3：安全获取宫位 (Critical Fix!) ---
@@ -41,12 +47,18 @@ app.get('/', (req, res) => {
 // --- API 1: 紫微斗数 (修复版) ---
 app.post('/api/ziwei', (req, res) => {
   try {
-    let { dateStr, gender, hour } = req.body;
-    
+    let { dateStr, gender, hour, timeIndex: providedTimeIndex } = req.body;
+
     // 1. 数据清洗
     const cleanDate = cleanDateStr(dateStr);
-    const timeIndex = getZiweiTimeIndex(Number(hour) || 0);
+    // Prefer an explicitly provided `timeIndex`, otherwise derive from `hour`.
+    let timeIndex = typeof providedTimeIndex !== 'undefined'
+      ? Number(providedTimeIndex)
+      : getZiweiTimeIndex(Number(hour) || 0);
+    if (isNaN(timeIndex)) timeIndex = 0;
     const genderStr = gender === '女' ? '女' : '男';
+
+    console.log('Ziwei request:', { dateStr, cleanDate, gender, hour, providedTimeIndex, timeIndex });
 
     // 2. 排盘
     const astrolabe = astro.bySolar(cleanDate, timeIndex, genderStr, true, 'zh-CN');
